@@ -1,7 +1,7 @@
 """Stage 2c: the previous team's Hybrid NCF + LSTM model, re-implemented as a reference baseline.
 
 Their setup: per-candidate 4-class classification (label 0-3) trained on lists subsampled to 1 positive : 4 negatives,
-user = 2-layer LSTM + attention over the last 200 history events (item id + type + time-gap bucket) plus 8 user
+user = 2-layer LSTM + attention over the last 200 history events (item id + type + time-gap bucket) plus 11 user
 statistics, candidate = item id + brand/shop/category embeddings. Two variants:
   * `published`: their attribute lookup indexed the product table with the *history* item index (a bug), ranked by
     the max class probability, as published;
@@ -27,6 +27,8 @@ ATTR_COLS = ["brand_id", "shop_id", "cate_id_1", "cate_id_2", "cate_id_3", "cate
 
 
 class Attention(nn.Module):
+    """Additive attention pooling of LSTM outputs; it ignores the candidate and the query."""
+
     def __init__(self, d):
         super().__init__()
         self.attn = nn.Linear(d, 1)
@@ -37,6 +39,12 @@ class Attention(nn.Module):
 
 
 class HybridNCF(nn.Module):
+    """MLP over (user sequence, candidate, user statistics) with 4 output classes, one per label 0-3.
+
+    The candidate is its item-id embedding plus attribute embeddings found through `lookups`, indexed by the
+    variant's product index. The query is not an input, so the model cannot condition on what the user searched for.
+    """
+
     def __init__(self, n_items, n_attr, n_meta, lookups, d=64, hidden=128):
         super().__init__()
         self.item_emb = nn.Embedding(n_items, d, padding_idx=0)
@@ -76,6 +84,7 @@ class HybridNCF(nn.Module):
 
 
 def run(cfg: dict) -> pl.DataFrame:
+    """Rebuild the previous team's data pipeline, diagnose its gaps, then train and evaluate each variant."""
     p = paths(cfg)
     log = get_logger("prior_ncf", p)
     nc = cfg["prior_ncf"]
@@ -95,6 +104,7 @@ def run(cfg: dict) -> pl.DataFrame:
                .filter(pl.col("is_pos") | (pl.col("neg_rank") <= nc["neg_per_pos"] * pl.col("n_pos")))
                .select("user_id", "wid", "label"))
 
+    # item vocabulary from history (hidx, 0 = unseen or rare) and a separate product table with its attribute lookups (pidx)
     hv = (hist.group_by("wid").len().filter(pl.col("len") >= nc["min_item_count"]).sort("wid")
           .with_row_index("hidx", offset=1).select("wid", pl.col("hidx").cast(pl.Int64)))
     n_hist = hv.height + 1
@@ -111,6 +121,7 @@ def run(cfg: dict) -> pl.DataFrame:
     for j, c in enumerate(ATTR_COLS):
         lookups[j, 1:] = torch.from_numpy(prod_tab[f"{c}_i"].to_numpy().astype(np.int64))
 
+    # user sequences: each user's last `maxlen` events, left-aligned, with gaps cut into 10 log-spaced time bins
     L = int(nc["maxlen"])
     h = (hist.join(hv, on="wid", how="left").with_columns(pl.col("hidx").fill_null(0))
          .with_columns(rk=pl.col("step").rank("ordinal", descending=True).over("user_id"))
@@ -128,6 +139,7 @@ def run(cfg: dict) -> pl.DataFrame:
     np.add.at(lengths, uid, 1)
     del h
 
+    # user statistics over the whole history, standardised with training users' mean and std
     hc = hist.join(products.select("wid", "cate_id_1", "cate_id_2", "cate_id_3", "cate_id_4"), on="wid", how="left")
     meta = (hc.group_by("user_id").agg(
         *[pl.col(f"cate_id_{i}").n_unique().alias(f"nunique_cats_{i}") for i in range(1, 5)],
@@ -144,6 +156,8 @@ def run(cfg: dict) -> pl.DataFrame:
     def group_lists(rows):
         r = (rows.join(hv, on="wid", how="left").join(prod_tab.select("wid", "pidx"), on="wid", how="left")
              .with_columns(pl.col("hidx", "pidx").fill_null(0)).sort("user_id"))
+        # "published" deliberately reproduces their bug: the history index is used to look up the product table, so the
+        # attributes belong to an unrelated product. "fixed" uses the item's own product index
         return {"user_id": r["user_id"].to_numpy(), "hidx": r["hidx"].to_numpy(),
                 "published": r["hidx"].clip(0, P - 1).to_numpy(), "fixed": r["pidx"].to_numpy(),
                 "label": r["label"].to_numpy().astype(np.int64), "wid": r["wid"].to_numpy()}
@@ -176,6 +190,7 @@ def run(cfg: dict) -> pl.DataFrame:
     log.info(f"prior model gap diagnosis: {gaps}")
 
     def batches(data, variant, bs, shuffle=False):
+        # batches of users; candidates stay flat and c_user maps each one back to its user's row
         uids = np.unique(data["user_id"])
         starts = np.searchsorted(data["user_id"], uids)
         ends = np.searchsorted(data["user_id"], uids, side="right")
@@ -192,6 +207,7 @@ def run(cfg: dict) -> pl.DataFrame:
                     t(data["hidx"][rows]), t(data[variant][rows]), t(c_user)), t(data["label"][rows]), rows)
 
     def train(variant):
+        # inverse-frequency class weights on the sampled lists; keeps the epoch with the lowest validation loss
         set_seed(seed)
         model = HybridNCF(n_hist, [sizes[c] for c in ATTR_COLS], len(meta_cols), lookups, nc["d"], nc["hidden"]).to(device)
         cnt = np.bincount(samp["train"]["label"], minlength=4).astype(np.float32) + 1.0
@@ -221,6 +237,7 @@ def run(cfg: dict) -> pl.DataFrame:
 
     @torch.no_grad()
     def score(model, data, variant):
+        # both ranking scores: max class probability (their choice) and expected label (the fixed variant's)
         maxp = np.zeros(len(data["label"]), np.float32)
         expv = np.zeros_like(maxp)
         for x, _, rows in batches(data, variant, 512):

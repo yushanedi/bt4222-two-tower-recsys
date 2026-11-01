@@ -65,7 +65,8 @@ CTR_KEYS = [("wid",), ("brand_id",), ("shop_id",), ("cate_id_4",), ("qid", "wid"
 def ctr_tables(source: pl.DataFrame, prior: float) -> dict[tuple, pl.DataFrame]:
     """Smoothed positive rate and display rate per key from labelled impressions of `source` users.
 
-    ctr = (positives + prior * global_rate) / (impressions + prior); the display rate (impressions per 1,000 source
+    ctr = (positives + prior * global_rate) / (impressions + prior); gain = summed label / (impressions + prior), the
+    graded version, shrunk towards 0 rather than the global rate; the display rate (impressions per 1,000 source
     users) is scale-free, so tables built from different numbers of users (folds vs all training users) agree.
     """
     g = float((source["label"] > 0).mean())
@@ -218,6 +219,10 @@ PCT_COLS = ["lex_bm25", "ctr_wid", "ctr_q_wid", "ipop_click_7", "ipop_order_365"
 
 # ---------------------------------------------------------------- driver
 def build(cfg: dict, force: bool = False) -> list[str]:
+    """Build the feature table: global tables once from all users, then per-user features one chunk of users at a time.
+
+    Chunking bounds memory (`features.chunk_users`). Returns the feature names.
+    """
     p = paths(cfg)
     log = get_logger("features", p)
     if (p.features / "feature_list.json").exists() and not force:
@@ -253,6 +258,7 @@ def build(cfg: dict, force: bool = False) -> list[str]:
                 .join(users.select("user_id", "qid", "split", "fold"), on="user_id")
                 .join(attrs, on="wid", how="left"))
         hist = history.join(chunk, on="user_id", how="semi").join(attrs, on="wid", how="left")
+        # the only label-based step: each row takes the table of its own fold, so it never sees its own label
         r = join_ctr(rows, ctr, g_all)
         r = r.join(pop["wid"], on="wid", how="left")
         for k in ATTR_KEYS:
@@ -269,6 +275,8 @@ def build(cfg: dict, force: bool = False) -> list[str]:
                    on="wid", how="left")
         # missing counts are zeros; missing "days since" means never
         r = r.with_columns([pl.col(c).fill_null(NO_EVENT_DAYS) for c in r.columns if c.endswith("_last_days")])
+        # identifiers, the label and the raw attribute ids are never features; list_context runs last because its
+        # within-slate percentiles need the final, null-filled columns
         meta = {"user_id", "wid", "label", "qid", "split", "fold", *ATTR_KEYS}
         feats = [c for c in r.columns if c not in meta]
         r = r.with_columns([pl.col(c).cast(pl.Float32).fill_null(0.0) for c in feats])

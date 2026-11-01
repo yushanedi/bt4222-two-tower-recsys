@@ -31,6 +31,11 @@ def masked_mean(e: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
 
 
 class ItemTower(nn.Module):
+    """Content-only item encoder: mean term embeddings of name / brand / category + id embeddings, through an MLP.
+
+    No item-id embedding, so items that never occur in any history are encoded the same way as logged ones.
+    """
+
     def __init__(self, n_terms: int, id_sizes: list[int], tc: dict):
         super().__init__()
         d_term, d_id, d = tc["d_term"], tc["d_id"], tc["d"]
@@ -73,6 +78,13 @@ class CandidateAttention(nn.Module):
 
 
 class QueryUserTower(nn.Module):
+    """Encodes (test query, user history) into one vector per candidate.
+
+    Query terms share the item tower's embedding, so query and item text live in one space. Inputs to the output MLP:
+    the query, the candidate-aware pooling of the short window, their product, the per-type counts of all three
+    windows, and the exact-match flags. `use_history` / `use_query` = False zero those inputs for the ablations.
+    """
+
     def __init__(self, item_tower: ItemTower, tc: dict, use_history: bool = True, use_query: bool = True):
         super().__init__()
         d, d_term = tc["d"], tc["d_term"]
@@ -117,6 +129,7 @@ class QueryUserTower(nn.Module):
         if not self.use_history:
             counts, flags = torch.zeros_like(counts), torch.zeros_like(flags)
         qe = q[:, None, :].expand_as(pooled)
+        # qe * pooled is an explicit query-history interaction, so the MLP need not learn the product from the concatenation
         z = torch.cat([qe, pooled, qe * pooled, self.count(counts)[:, None, :].expand_as(pooled), flags], -1)
         return self.out(z)
 
@@ -134,6 +147,11 @@ class QueryUserTower(nn.Module):
 
 
 class TwoTower(nn.Module):
+    """Both towers plus the learned training-only terms: temperature, popularity offset and logQ correction.
+
+    The exported score is the plain cosine of `user_vec` and `item_vec`; `pop_logit` and `logq` only shape the losses.
+    """
+
     def __init__(self, n_terms: int, id_sizes: list[int], tc: dict, use_history: bool = True, use_query: bool = True):
         super().__init__()
         self.item = ItemTower(n_terms, id_sizes, tc)

@@ -141,6 +141,7 @@ def _load(p, splits, cfg, frac, only_with_pos=True) -> pl.DataFrame:
 
 
 def variants(names: list[str], naive: list[str], cfg: dict) -> dict[str, list[str]]:
+    """Feature list of each compared ranker (the four variants in the module docstring)."""
     win = set(windowed_history_columns(names, cfg))
     ratios = [n for n in naive if n.endswith("_ratio")]
     base = [n for n in names if n not in win]
@@ -157,6 +158,7 @@ def history_age_segment(p) -> pl.DataFrame:
 
 
 def run(cfg: dict, force: bool = False) -> pl.DataFrame:
+    """Train one ranker per variant on the same users, then compare test metrics overall and by history age."""
     p = paths(cfg)
     log = get_logger("window_ablation", p)
     naive = build(cfg, force)

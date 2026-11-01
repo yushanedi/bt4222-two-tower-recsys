@@ -5,7 +5,7 @@
   * insights  - lift of behavioural signals (open carts, repurchase, recent clicks, ...) on engagement
   * ablations - rankers retrained without one feature group at a time (same user subsample for all)
   * shap      - LightGBM's exact TreeSHAP contributions (pred_contrib) on test rows, aggregated by feature and group
-  * attention - how the full tower distributes query-guided attention over the three history segments
+  * attention - how the full tower splits candidate-aware attention between short-window events and the null slot
 """
 from __future__ import annotations
 
@@ -164,6 +164,10 @@ def insights(cfg, p, log) -> pl.DataFrame:
 
 
 def ablations(cfg, p, log) -> pl.DataFrame:
+    """Retrain the ranker without each feature group in turn and compare test metrics with the all-features ranker.
+
+    All rankers use the same user subsample, so the differences reflect the feature group, not the training data.
+    """
     frac = cfg["diagnostics"]["ablation_user_frac"]
     names = dataset.feature_names(p)
     rows = []
@@ -179,6 +183,7 @@ def ablations(cfg, p, log) -> pl.DataFrame:
 
 
 def shap(cfg, p, log) -> pl.DataFrame:
+    """Mean |SHAP| of the final ranker on a sample of test rows, per feature and summed per feature group."""
     booster = lgb.Booster(model_file=str(p.ranker / "ranker.txt"))
     names = load_json(p.ranker / "ranker_meta.json")["features"]
     df = dataset.load(p, ["test"], cfg)

@@ -179,6 +179,13 @@ def score_users(model: TwoTower, st: Stores, feats: ItemFeats, users: np.ndarray
 # ---------------------------------------------------------------- training
 def train_one(name: str, train_users: np.ndarray, val_users: np.ndarray, st: Stores, a: dict, cfg: dict,
               device: str, log, use_history: bool = True, use_query: bool = True) -> dict:
+    """Train one tower model on `train_users` and return its best state (see the module docstring for the objective).
+
+    Each step minimises the listwise slate loss; every `aux.every` steps it adds the weighted auxiliary sampled softmax.
+    The popularity offset enters the training score only: `score_users` exports the pure cosine, so the tower score
+    stays complementary to the ranker's popularity features. Validation runs `eval_per_epoch` times per epoch without
+    word dropout, and the checkpoint with the best gNDCG@10 is kept, whichever epoch it came from.
+    """
     tc = cfg["tower"]
     set_seed(cfg["seed"])
     rng = np.random.default_rng(cfg["seed"])
@@ -241,6 +248,8 @@ def train_one(name: str, train_users: np.ndarray, val_users: np.ndarray, st: Sto
                     neg, nmask = st.neg_batch(pu, pit, n_neg, neg_ok)
                     neg_t = torch.as_tensor(neg, device=device)
                     neg_rows = feats(neg_t)
+                    # logq only here: anchors and their in-batch negatives are sampled from the logs, so common items are
+                    # over-represented; the slate loss above is not sampled and handles popularity through pop_logit
                     aux = inbatch_loss(
                         model.user_vec(pbd["q"], pbd["ctx"], feats, pit_t[:, None])[:, 0],
                         model.item_vec(pos_rows), pit_t, torch.as_tensor(pw, device=device), model.scale(),

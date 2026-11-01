@@ -1,5 +1,5 @@
 # Full-scale configuration (GPU machine). Any key can be overridden on the command line, e.g.
-#   python scripts/04_train_tower.py --config configs/default.yaml --set tower.epochs=2 --set device=cuda
+#   python scripts/03_train_tower.py --config configs/default.yaml --set tower.epochs=2 --set device=cuda
 # Relative paths are resolved against the repository root.
 
 paths:
@@ -37,7 +37,7 @@ tower:
   d: 128                     # output dimension of both towers
   d_term: 32                 # shared term embedding (queries and item text)
   d_id: 32                   # brand / shop / category id embeddings
-  d_pop: 16                  # popularity bucket embeddings
+  d_pop: 16                  # unused: popularity is now an explicit offset, not an embedding
   query_len: 8
   seg_len: {short: 50, mid: 30, long: 30}   # most recent events kept per history segment
   min_term_count: 20         # a term must appear this often to earn its own embedding row
@@ -50,7 +50,7 @@ tower:
   lr: 0.001
   weight_decay: 1.0e-4
   dropout: 0.15              # in both tower MLPs
-  word_dropout: 0.15         # hide this share of a history item's title terms
+  word_dropout: 0.15         # hide this share of an item's title terms in training (candidates and history alike)
   eval_per_epoch: 2          # validate twice per epoch so the best checkpoint is not missed
   grad_clip: 5.0
   aux:                       # auxiliary in-batch softmax on historical (query -> item) pairs
@@ -76,6 +76,8 @@ ranker:
     metric: ndcg
     eval_at: [1, 10]
     learning_rate: 0.03
+    # regularisation against overfitting the training slates: shallow trees, large leaves, feature and row
+    # subsampling, L2 on leaf values, and path_smooth to pull small leaves towards their parent
     num_leaves: 31
     min_data_in_leaf: 1000
     max_depth: 7

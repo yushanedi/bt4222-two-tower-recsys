@@ -14,6 +14,11 @@ from .train import ItemFeats, load_assets, load_model, make_stores, model_plan, 
 
 
 def score(cfg: dict, variant: str = "", force: bool = False) -> pl.DataFrame:
+    """Score every displayed item with the model `model_plan` assigns to its user, save the scores and tower metrics.
+
+    An ablation `variant` only has a `full` model, so only validation and test users are scored. Existing scores are
+    reused unless `force`, after checking that they are newer than the data and checkpoints they came from.
+    """
     p = paths(cfg)
     log = get_logger("tower", p)
     out = p.tower / (f"tower_scores_{variant}.parquet" if variant else "tower_scores.parquet")

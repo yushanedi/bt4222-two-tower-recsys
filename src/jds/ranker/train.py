@@ -18,6 +18,11 @@ from . import dataset
 
 def fit(cfg: dict, p, names: list[str], use_tower: bool = True, user_frac: float | None = None, tag: str = "ranker",
         log=None) -> lgb.Booster:
+    """Load the rows and fit one ranker, on a share of training users when `user_frac` is set (the ablations do this).
+
+    Slates without a positive are dropped: they have no pair to order, so they give LambdaRank nothing to learn from
+    and leave NDCG undefined on validation.
+    """
     rc = cfg["ranker"]
     log = log or get_logger("ranker", p)
     frac = rc["train_user_frac"] if user_frac is None else user_frac
@@ -29,7 +34,11 @@ def fit(cfg: dict, p, names: list[str], use_tower: bool = True, user_frac: float
 
 
 def fit_frames(cfg: dict, tr: pl.DataFrame, va: pl.DataFrame, names: list[str], tag: str = "ranker", log=None) -> lgb.Booster:
-    """LambdaRank on already-loaded training / validation rows (sorted by user, positives-only slates)."""
+    """LambdaRank on already-loaded training / validation rows (sorted by user, positives-only slates).
+
+    Each user's slate is one query group. Boosting stops once validation NDCG has not improved for
+    `early_stopping_rounds`, which sets the number of trees.
+    """
     rc = cfg["ranker"]
     log = log or get_logger("ranker")
     t0 = time.time()
@@ -50,6 +59,7 @@ def fit_frames(cfg: dict, tr: pl.DataFrame, va: pl.DataFrame, names: list[str], 
 
 
 def train(cfg: dict, force: bool = False) -> None:
+    """Fit the final ranker and save it at its best iteration, with the feature importances and feature order."""
     p = paths(cfg)
     log = get_logger("ranker", p)
     out = p.ranker / "ranker.txt"

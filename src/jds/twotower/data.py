@@ -6,8 +6,8 @@ task) the user's earlier events are split by age into
     mid    = [short, mid) days -> carts, follows and orders only
     long   = [mid, inf) days   -> orders only
 and the most recent `seg_len[segment]` events of each segment are kept. Each segment therefore has a homogeneous
-meaning and gets its own attention pooling in the model, instead of one window whose content depends on how
-active the user was last week.
+meaning, instead of one window whose content depends on how active the user was last week. The model attends over
+the short segment only; mid and long enter through per-type counts and exact-match flags.
 """
 from __future__ import annotations
 
@@ -175,7 +175,8 @@ class Stores:
         self.h_type = h["type"].to_numpy().astype(np.int64)
         self.h_age = h["age_days"].to_numpy().astype(np.float64)
         self.h_qid = h["qid"].fill_null(-1).to_numpy().astype(np.int64)
-        # sortable key: user, then age decreasing (ages never increase along a user's history)
+        # sortable key: user, then age decreasing (ages never increase along a user's history). Each user owns a band of
+        # 4096 and ages stay below 2048 days, so one searchsorted over h_key finds age boundaries for a batch of users
         self.h_key = self.h_user * 4096.0 + (2048.0 - self.h_age)
         self.u_start = np.searchsorted(self.h_user, np.arange(self.n_users))
         self.u_end = np.searchsorted(self.h_user, np.arange(self.n_users), side="right")
@@ -200,13 +201,17 @@ class Stores:
         return np.searchsorted(self.h_key, users * 4096.0 + (2048.0 - anchor_age - days), side="right")
 
     def context(self, users: np.ndarray, end: np.ndarray, anchor_age: np.ndarray) -> dict:
-        """Three history segments of the events before `end` (exclusive), right-aligned, ages relative to the anchor."""
+        """Three history segments of the events before `end` (exclusive), right-aligned, ages relative to the anchor.
+
+        History is sorted oldest to newest, so each segment is one contiguous block [lo, hi): long, then mid, then short.
+        """
         start = self.u_start[users]
         b_long = np.clip(self._bound(users, anchor_age, self.mid), start, end)
         b_mid = np.clip(self._bound(users, anchor_age, self.short), b_long, end)
         out = {}
         for seg, lo, hi in (("long", start, b_long), ("mid", b_long, b_mid), ("short", b_mid, end)):
             L = self.seg_len[seg]
+            # the L positions ending just before hi: newest event in the last slot, positions before lo become padding
             idx = hi[:, None] - L + np.arange(L)[None]
             mask = idx >= lo[:, None]
             idx = np.where(mask, idx, 0)

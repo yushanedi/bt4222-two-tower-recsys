@@ -36,6 +36,11 @@ def done(data_dir) -> bool:
 
 
 def prepare_full(cfg: dict, force: bool = False) -> None:
+    """Parse the raw files into the tables listed in the module docstring, after checking the raw lists line up.
+
+    Candidates are shuffled because the raw order leaks the label (positives first). Users are split among those with
+    a positive; users without one go to training, then every training user gets a cross-fitting fold.
+    """
     p = paths(cfg, "full")
     log = get_logger("prepare", p)
     if done(p.data) and not force:
